@@ -15,12 +15,27 @@ namespace gbrecomp {
 
 namespace {
 
+constexpr std::array<const char*, 4> kSnesExtensions = {
+    ".sfc",
+    ".smc",
+    ".fig",
+    ".swc"
+};
+
+constexpr size_t kSnesTitleLength = 21;
+constexpr uint8_t kSnesMapModeMask = 0x0F;
+// Common SNES map-mode low-nibble values range from 0x0 (LoROM) through 0x5
+// (ExHiROM / specialty mappings). Larger values are unlikely to be valid headers.
+constexpr uint8_t kMaxKnownSnesMapMode = 0x05;
+// Common internal header locations for LoROM, HiROM, and ExHiROM images.
+constexpr std::array<size_t, 3> kSnesHeaderOffsets = {0x7FC0, 0xFFC0, 0x40FFC0};
+
 bool has_snes_extension(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
         [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
-    return extension == ".sfc" || extension == ".smc" || extension == ".fig" || extension == ".swc";
+    return std::find(kSnesExtensions.begin(), kSnesExtensions.end(), extension) != kSnesExtensions.end();
 }
 
 bool looks_like_ascii_title(const std::vector<uint8_t>& data, size_t offset, size_t length) {
@@ -49,12 +64,12 @@ bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) 
         return false;
     }
 
-    if (!looks_like_ascii_title(data, base, 21)) {
+    if (!looks_like_ascii_title(data, base, kSnesTitleLength)) {
         return false;
     }
 
     const uint8_t map_mode = data[base + 0x15];
-    if ((map_mode & 0x0F) > 0x05) {
+    if ((map_mode & kSnesMapModeMask) > kMaxKnownSnesMapMode) {
         return false;
     }
 
@@ -68,20 +83,18 @@ bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) 
     return checksum != 0 && static_cast<uint16_t>(checksum + checksum_complement) == 0xFFFF;
 }
 
-bool looks_like_snes_rom(const std::vector<uint8_t>& data, const std::filesystem::path& path) {
-    constexpr std::array<size_t, 3> header_offsets = {0x7FC0, 0xFFC0, 0x40FFC0};
-
-    for (size_t offset : header_offsets) {
+bool looks_like_snes_data(const std::vector<uint8_t>& data) {
+    for (size_t offset : kSnesHeaderOffsets) {
         if (has_probable_snes_header_at(data, offset)) {
             return true;
         }
     }
 
-    return has_snes_extension(path);
+    return false;
 }
 
-bool looks_like_snes_rom(const std::vector<uint8_t>& data) {
-    return looks_like_snes_rom(data, {});
+bool looks_like_snes_rom(const std::vector<uint8_t>& data, const std::filesystem::path& path) {
+    return looks_like_snes_data(data) || has_snes_extension(path);
 }
 
 } // namespace
@@ -289,7 +302,7 @@ std::optional<ROM> ROM::load_from_buffer(std::vector<uint8_t> data,
         return rom;
     }
 
-    if (looks_like_snes_rom(rom.data_)) {
+    if (looks_like_snes_data(rom.data_)) {
         rom.error_ = "SNES ROMs are not supported yet (expected Game Boy ROM data)";
         return rom;
     }
