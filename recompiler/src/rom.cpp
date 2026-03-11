@@ -22,6 +22,8 @@ constexpr std::array<const char*, 4> kSnesExtensions = {
     ".swc"
 };
 
+constexpr uint8_t kMinPrintableAscii = 0x20;
+constexpr uint8_t kMaxPrintableAscii = 0x7E;
 constexpr size_t kSnesTitleLength = 21;
 constexpr uint8_t kSnesMapModeMask = 0x0F;
 // Common SNES map-mode low-nibble values range from 0x0 (LoROM) through 0x5
@@ -33,7 +35,7 @@ constexpr std::array<size_t, 3> kSnesHeaderOffsets = {0x7FC0, 0xFFC0, 0x40FFC0};
 bool has_snes_extension(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
-        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); });
 
     return std::find(kSnesExtensions.begin(), kSnesExtensions.end(), extension) != kSnesExtensions.end();
 }
@@ -49,7 +51,7 @@ bool looks_like_ascii_title(const std::vector<uint8_t>& data, size_t offset, siz
         if (ch == 0x00 || ch == ' ') {
             continue;
         }
-        if (ch < 0x20 || ch > 0x7E) {
+        if (ch < kMinPrintableAscii || ch > kMaxPrintableAscii) {
             return false;
         }
         has_printable = true;
@@ -80,7 +82,7 @@ bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) 
         static_cast<uint16_t>(data[base + 0x1E]) |
         (static_cast<uint16_t>(data[base + 0x1F]) << 8);
 
-    return checksum != 0 && static_cast<uint16_t>(checksum + checksum_complement) == 0xFFFF;
+    return checksum != 0 && (checksum ^ checksum_complement) == 0xFFFF;
 }
 
 bool looks_like_snes_data(const std::vector<uint8_t>& data) {
@@ -273,7 +275,7 @@ std::optional<ROM> ROM::load(const std::filesystem::path& path) {
     }
 
     if (looks_like_snes_rom(rom.data_, path)) {
-        rom.error_ = "SNES ROMs are not supported yet (expected a Game Boy .gb/.gbc ROM)";
+        rom.error_ = "SNES ROMs are not supported yet (expected Game Boy ROM format)";
         return rom;
     }
     
@@ -302,6 +304,8 @@ std::optional<ROM> ROM::load_from_buffer(std::vector<uint8_t> data,
         return rom;
     }
 
+    // Buffer-based loads do not have a trustworthy filename extension, so only
+    // use header heuristics here.
     if (looks_like_snes_data(rom.data_)) {
         rom.error_ = "SNES ROMs are not supported yet (expected Game Boy ROM data)";
         return rom;
