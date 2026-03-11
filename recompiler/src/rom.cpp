@@ -27,8 +27,14 @@ constexpr uint8_t kMaxPrintableAscii = 0x7E;
 constexpr size_t kSnesTitleLength = 21;
 constexpr uint8_t kSnesMapModeMask = 0x0F;
 // Common SNES map-mode low-nibble values range from 0x0 (LoROM) through 0x5
-// (ExHiROM / specialty mappings). Larger values are unlikely to be valid headers.
+// (ExHiROM / specialty mappings). Larger values may exist, but are uncommon
+// enough that we treat them as a weak signal against "this is definitely SNES".
 constexpr uint8_t kMaxKnownSnesMapMode = 0x05;
+constexpr size_t kSnesChecksumComplementOffset = 0x1C;
+constexpr size_t kSnesChecksumOffset = 0x1E;
+constexpr size_t kSnesResetVectorOffset = 0x3C;
+constexpr size_t kSnesBankSize = 0x8000;
+constexpr size_t kSnesBankSizeRoundingMask = kSnesBankSize - 1;
 // Common internal header locations for LoROM, HiROM, and ExHiROM images,
 // both with and without a 512-byte copier header.
 constexpr std::array<size_t, 6> kSnesHeaderOffsets = {
@@ -81,11 +87,11 @@ bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) 
     }
 
     const uint16_t checksum_complement =
-        static_cast<uint16_t>(data[base + 0x1C]) |
-        (static_cast<uint16_t>(data[base + 0x1D]) << 8);
+        static_cast<uint16_t>(data[base + kSnesChecksumComplementOffset]) |
+        (static_cast<uint16_t>(data[base + kSnesChecksumComplementOffset + 1]) << 8);
     const uint16_t checksum =
-        static_cast<uint16_t>(data[base + 0x1E]) |
-        (static_cast<uint16_t>(data[base + 0x1F]) << 8);
+        static_cast<uint16_t>(data[base + kSnesChecksumOffset]) |
+        (static_cast<uint16_t>(data[base + kSnesChecksumOffset + 1]) << 8);
 
     return checksum != 0 && (checksum ^ checksum_complement) == 0xFFFF;
 }
@@ -105,7 +111,7 @@ bool looks_like_snes_data(const std::vector<uint8_t>& data) {
 }
 
 std::string trim_ascii(std::string value) {
-    const auto end = value.find_last_not_of(" \0", std::string::npos, 2);
+    const auto end = value.find_last_not_of(" \0");
     if (end == std::string::npos) {
         return "";
     }
@@ -452,8 +458,8 @@ bool ROM::validate() {
 }
 
 bool ROM::parse_snes_header(size_t header_offset) {
-    constexpr size_t kResetVectorOffset = 0x3C;
-    if (header_offset + kResetVectorOffset + 2 > data_.size()) {
+    // Native-mode reset vector lives at +0x3C from the internal SNES header base.
+    if (header_offset + kSnesResetVectorOffset + 2 > data_.size()) {
         error_ = "SNES header is truncated";
         return false;
     }
@@ -469,22 +475,23 @@ bool ROM::parse_snes_header(size_t header_offset) {
     header_.old_licensee_code = data_[header_offset + 0x1A];
     header_.rom_version = data_[header_offset + 0x1B];
     header_.snes_checksum_complement =
-        static_cast<uint16_t>(data_[header_offset + 0x1C]) |
-        (static_cast<uint16_t>(data_[header_offset + 0x1D]) << 8);
+        static_cast<uint16_t>(data_[header_offset + kSnesChecksumComplementOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesChecksumComplementOffset + 1]) << 8);
     header_.global_checksum =
-        static_cast<uint16_t>(data_[header_offset + 0x1E]) |
-        (static_cast<uint16_t>(data_[header_offset + 0x1F]) << 8);
+        static_cast<uint16_t>(data_[header_offset + kSnesChecksumOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesChecksumOffset + 1]) << 8);
     header_.snes_reset_vector =
-        static_cast<uint16_t>(data_[header_offset + kResetVectorOffset]) |
-        (static_cast<uint16_t>(data_[header_offset + kResetVectorOffset + 1]) << 8);
+        static_cast<uint16_t>(data_[header_offset + kSnesResetVectorOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesResetVectorOffset + 1]) << 8);
 
     header_.rom_size_bytes = snes_size_from_code(header_.rom_size_code);
     header_.ram_size_bytes = (header_.ram_size_code == 0) ? 0 : snes_size_from_code(header_.ram_size_code);
     header_.rom_banks = header_.rom_size_bytes > 0
-        ? static_cast<uint16_t>(header_.rom_size_bytes / 0x8000)
+        ? static_cast<uint16_t>(header_.rom_size_bytes / kSnesBankSize)
         : 0;
+    // Round up partial SRAM allocations to the next 32 KB bank for reporting.
     header_.ram_banks = header_.ram_size_bytes > 0
-        ? static_cast<uint8_t>(std::max<size_t>(1, header_.ram_size_bytes / 0x8000))
+        ? static_cast<uint8_t>(std::max<size_t>(1, (header_.ram_size_bytes + kSnesBankSizeRoundingMask) / kSnesBankSize))
         : 0;
 
     header_.is_cgb = false;
@@ -544,8 +551,8 @@ bool ROM::validate_snes() {
     header_.header_checksum_valid = (header_.global_checksum ^ checksum_complement) == 0xFFFF;
 
     uint32_t global_sum = 0;
-    const size_t checksum_lo = header_.header_offset + 0x1C;
-    const size_t checksum_hi = header_.header_offset + 0x1F;
+    const size_t checksum_lo = header_.header_offset + kSnesChecksumComplementOffset;
+    const size_t checksum_hi = header_.header_offset + kSnesChecksumOffset + 1;
     for (size_t i = 0; i < data_.size(); i++) {
         if (i < checksum_lo || i > checksum_hi) {
             global_sum += data_[i];
@@ -558,6 +565,8 @@ bool ROM::validate_snes() {
         return false;
     }
 
+    // For SNES we allow inspection to continue even when metadata looks suspicious,
+    // because `--info` is meant to be useful for partial dumps and homebrew stubs too.
     if (header_.rom_size_bytes > 0 && data_.size() < header_.rom_size_bytes) {
         error_ = "SNES ROM size is smaller than the header indicates";
     } else if (!header_.header_checksum_valid) {

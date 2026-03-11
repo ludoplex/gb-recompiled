@@ -185,7 +185,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (rom.header().system_type == gbrecomp::SystemType::SNES) {
-        std::cerr << "\nError: SNES ROM header inspection works, but 65C816 disassembly/recompilation is not implemented yet.\n";
+        std::cerr << "\nError: SNES disassembly/recompilation (65C816 architecture) is not implemented yet. Re-run with --info to inspect metadata only.\n";
         return 1;
     }
     
