@@ -78,6 +78,8 @@ ninja -C output/game/build
 ./output/game/build/game
 ```
 
+> **Supported input**: Game Boy / Game Boy Color ROMs (`.gb`, `.gbc`) support full recompilation. SNES ROMs (`.sfc`, `.smc`, `.fig`, `.swc`) can now be loaded with `--info` to inspect header metadata, but 65C816 disassembly/recompilation is not implemented yet.
+
 ---
 
 ## Quick Setup
@@ -139,6 +141,7 @@ The recompiler will:
 
 | Flag | Description |
 |------|-------------|
+| `--info` | Load the ROM, print parsed header metadata, and exit |
 | `--trace` | Print every instruction during analysis |
 | `--limit <N>` | Stop analysis after N instructions |
 | `--add-entry-point b:addr` | Manually specified entry point (e.g. `1:4000`) |

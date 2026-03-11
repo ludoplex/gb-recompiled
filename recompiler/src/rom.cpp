@@ -8,12 +8,148 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <array>
+#include <cctype>
 
 namespace gbrecomp {
+
+namespace {
+
+constexpr std::array<const char*, 4> kSnesExtensions = {
+    ".sfc",
+    ".smc",
+    ".fig",
+    ".swc"
+};
+
+constexpr uint8_t kMinPrintableAscii = 0x20;
+constexpr uint8_t kMaxPrintableAscii = 0x7E;
+constexpr size_t kSnesTitleLength = 21;
+constexpr uint8_t kSnesMapModeMask = 0x0F;
+// Common SNES map-mode low-nibble values range from 0x0 (LoROM) through 0x5
+// (ExHiROM / specialty mappings). Larger values may exist, but are uncommon
+// enough that we treat them as a weak signal against "this is definitely SNES".
+constexpr uint8_t kMaxKnownSnesMapMode = 0x05;
+constexpr size_t kSnesChecksumComplementOffset = 0x1C;
+constexpr size_t kSnesChecksumOffset = 0x1E;
+constexpr size_t kSnesResetVectorOffset = 0x3C;
+constexpr size_t kSnesBankSize = 0x8000;
+constexpr size_t kSnesBankSizeRoundingMask = kSnesBankSize - 1;
+// Common internal header locations for LoROM, HiROM, and ExHiROM images,
+// both with and without a 512-byte copier header.
+constexpr std::array<size_t, 6> kSnesHeaderOffsets = {
+    0x7FC0, 0x81C0,
+    0xFFC0, 0x101C0,
+    0x40FFC0, 0x4101C0
+};
+
+bool has_snes_extension(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); });
+
+    return std::find(kSnesExtensions.begin(), kSnesExtensions.end(), extension) != kSnesExtensions.end();
+}
+
+bool looks_like_ascii_title(const std::vector<uint8_t>& data, size_t offset, size_t length) {
+    if (offset + length > data.size()) {
+        return false;
+    }
+
+    bool has_printable = false;
+    for (size_t i = 0; i < length; i++) {
+        uint8_t ch = data[offset + i];
+        if (ch == 0x00 || ch == ' ') {
+            continue;
+        }
+        if (ch < kMinPrintableAscii || ch > kMaxPrintableAscii) {
+            return false;
+        }
+        has_printable = true;
+    }
+
+    return has_printable;
+}
+
+bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) {
+    constexpr size_t kHeaderSize = 0x40;
+    if (base + kHeaderSize > data.size()) {
+        return false;
+    }
+
+    if (!looks_like_ascii_title(data, base, kSnesTitleLength)) {
+        return false;
+    }
+
+    const uint8_t map_mode = data[base + 0x15];
+    if ((map_mode & kSnesMapModeMask) > kMaxKnownSnesMapMode) {
+        return false;
+    }
+
+    const uint16_t checksum_complement =
+        static_cast<uint16_t>(data[base + kSnesChecksumComplementOffset]) |
+        (static_cast<uint16_t>(data[base + kSnesChecksumComplementOffset + 1]) << 8);
+    const uint16_t checksum =
+        static_cast<uint16_t>(data[base + kSnesChecksumOffset]) |
+        (static_cast<uint16_t>(data[base + kSnesChecksumOffset + 1]) << 8);
+
+    return checksum != 0 && (checksum ^ checksum_complement) == 0xFFFF;
+}
+
+std::optional<size_t> find_snes_header_offset(const std::vector<uint8_t>& data) {
+    for (size_t offset : kSnesHeaderOffsets) {
+        if (has_probable_snes_header_at(data, offset)) {
+            return offset;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool looks_like_snes_data(const std::vector<uint8_t>& data) {
+    return find_snes_header_offset(data).has_value();
+}
+
+std::string trim_ascii(std::string value) {
+    const auto end = value.find_last_not_of(" \0");
+    if (end == std::string::npos) {
+        return "";
+    }
+    value.erase(end + 1);
+    return value;
+}
+
+size_t snes_size_from_code(uint8_t code) {
+    if (code > 0x1F) {
+        return 0;
+    }
+    return static_cast<size_t>(1024) << code;
+}
+
+const char* snes_map_mode_name(uint8_t map_mode) {
+    switch (map_mode & kSnesMapModeMask) {
+        case 0x00: return "LoROM";
+        case 0x01: return "HiROM";
+        case 0x02: return "LoROM + S-DD1/SA-1";
+        case 0x03: return "HiROM + S-DD1/SA-1";
+        case 0x05: return "ExHiROM";
+        default: return "Unknown";
+    }
+}
+
+} // namespace
 
 /* ============================================================================
  * MBC Type Helpers
  * ========================================================================== */
+
+const char* system_type_name(SystemType type) {
+    switch (type) {
+        case SystemType::GAME_BOY: return "Game Boy";
+        case SystemType::SNES: return "SNES";
+        default: return "Unknown";
+    }
+}
 
 const char* mbc_type_name(MBCType type) {
     switch (type) {
@@ -183,6 +319,11 @@ std::optional<ROM> ROM::load(const std::filesystem::path& path) {
         rom.error_ = "Failed to read file";
         return rom;
     }
+
+    if (has_snes_extension(path) && !looks_like_snes_data(rom.data_)) {
+        rom.error_ = "Failed to locate a valid SNES header";
+        return rom;
+    }
     
     // Parse header
     if (!rom.parse_header()) {
@@ -208,7 +349,7 @@ std::optional<ROM> ROM::load_from_buffer(std::vector<uint8_t> data,
         rom.error_ = "Data too small to be a valid ROM";
         return rom;
     }
-    
+
     if (!rom.parse_header()) {
         return rom;
     }
@@ -222,6 +363,16 @@ std::optional<ROM> ROM::load_from_buffer(std::vector<uint8_t> data,
 }
 
 bool ROM::parse_header() {
+    if (auto snes_header_offset = find_snes_header_offset(data_)) {
+        return parse_snes_header(*snes_header_offset);
+    }
+    return parse_game_boy_header();
+}
+
+bool ROM::parse_game_boy_header() {
+    header_.system_type = SystemType::GAME_BOY;
+    header_.header_offset = 0x100;
+
     // Entry point (0x100-0x103)
     std::copy_n(data_.data() + 0x100, 4, header_.entry_point);
     
@@ -300,6 +451,57 @@ bool ROM::parse_header() {
 }
 
 bool ROM::validate() {
+    if (header_.system_type == SystemType::SNES) {
+        return validate_snes();
+    }
+    return validate_game_boy();
+}
+
+bool ROM::parse_snes_header(size_t header_offset) {
+    // Native-mode reset vector lives at +0x3C from the internal SNES header base.
+    if (header_offset + kSnesResetVectorOffset + 2 > data_.size()) {
+        error_ = "SNES header is truncated";
+        return false;
+    }
+
+    header_.system_type = SystemType::SNES;
+    header_.header_offset = header_offset;
+    header_.title = trim_ascii(std::string(reinterpret_cast<const char*>(data_.data() + header_offset), kSnesTitleLength));
+    header_.snes_map_mode = data_[header_offset + 0x15];
+    header_.snes_cartridge_type = data_[header_offset + 0x16];
+    header_.rom_size_code = data_[header_offset + 0x17];
+    header_.ram_size_code = data_[header_offset + 0x18];
+    header_.destination_code = data_[header_offset + 0x19];
+    header_.old_licensee_code = data_[header_offset + 0x1A];
+    header_.rom_version = data_[header_offset + 0x1B];
+    header_.snes_checksum_complement =
+        static_cast<uint16_t>(data_[header_offset + kSnesChecksumComplementOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesChecksumComplementOffset + 1]) << 8);
+    header_.global_checksum =
+        static_cast<uint16_t>(data_[header_offset + kSnesChecksumOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesChecksumOffset + 1]) << 8);
+    header_.snes_reset_vector =
+        static_cast<uint16_t>(data_[header_offset + kSnesResetVectorOffset]) |
+        (static_cast<uint16_t>(data_[header_offset + kSnesResetVectorOffset + 1]) << 8);
+
+    header_.rom_size_bytes = snes_size_from_code(header_.rom_size_code);
+    header_.ram_size_bytes = (header_.ram_size_code == 0) ? 0 : snes_size_from_code(header_.ram_size_code);
+    header_.rom_banks = header_.rom_size_bytes > 0
+        ? static_cast<uint16_t>(header_.rom_size_bytes / kSnesBankSize)
+        : 0;
+    // Round up partial SRAM allocations to the next 32 KB bank for reporting.
+    header_.ram_banks = header_.ram_size_bytes > 0
+        ? static_cast<uint8_t>(std::max<size_t>(1, (header_.ram_size_bytes + kSnesBankSizeRoundingMask) / kSnesBankSize))
+        : 0;
+
+    header_.is_cgb = false;
+    header_.is_cgb_only = false;
+    header_.is_sgb = false;
+    header_.logo_valid = false;
+    return true;
+}
+
+bool ROM::validate_game_boy() {
     // Validate logo
     header_.logo_valid = std::equal(
         header_.nintendo_logo, 
@@ -344,6 +546,38 @@ bool ROM::validate() {
     return true;
 }
 
+bool ROM::validate_snes() {
+    const uint16_t checksum_complement = header_.snes_checksum_complement;
+    header_.header_checksum_valid = (header_.global_checksum ^ checksum_complement) == 0xFFFF;
+
+    uint32_t global_sum = 0;
+    const size_t checksum_lo = header_.header_offset + kSnesChecksumComplementOffset;
+    const size_t checksum_hi = header_.header_offset + kSnesChecksumOffset + 1;
+    for (size_t i = 0; i < data_.size(); i++) {
+        if (i < checksum_lo || i > checksum_hi) {
+            global_sum += data_[i];
+        }
+    }
+    header_.global_checksum_valid = (static_cast<uint16_t>(global_sum) == header_.global_checksum);
+
+    if (header_.snes_reset_vector == 0x0000 || header_.snes_reset_vector == 0xFFFF) {
+        error_ = "SNES ROM has an invalid reset vector";
+        return false;
+    }
+
+    // For SNES we allow inspection to continue even when metadata looks suspicious,
+    // because `--info` is meant to be useful for partial dumps and homebrew stubs too.
+    if (header_.rom_size_bytes > 0 && data_.size() < header_.rom_size_bytes) {
+        error_ = "SNES ROM size is smaller than the header indicates";
+    } else if (!header_.header_checksum_valid) {
+        error_ = "SNES checksum pair is invalid";
+    } else if (!header_.global_checksum_valid) {
+        error_ = "SNES checksum does not match ROM contents";
+    }
+
+    return true;
+}
+
 uint8_t ROM::read(uint16_t addr) const {
     if (addr < data_.size()) {
         return data_[addr];
@@ -382,7 +616,28 @@ void print_rom_info(const ROM& rom) {
     const auto& h = rom.header();
     
     std::cout << "\nROM Information:\n";
+    std::cout << "  System:       " << system_type_name(h.system_type) << "\n";
     std::cout << "  Title:        " << h.title << "\n";
+
+    if (h.system_type == SystemType::SNES) {
+        std::cout << "  Map Mode:     " << snes_map_mode_name(h.snes_map_mode)
+                  << " (0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(h.snes_map_mode)
+                  << std::dec << std::setfill(' ') << ")\n";
+        std::cout << "  Cart Type:    0x" << std::hex << std::setw(2) << std::setfill('0')
+                  << static_cast<int>(h.snes_cartridge_type) << std::dec << std::setfill(' ') << "\n";
+        std::cout << "  ROM Size:     " << (h.rom_size_bytes / 1024) << " KB\n";
+        if (h.ram_size_bytes > 0) {
+            std::cout << "  RAM Size:     " << (h.ram_size_bytes / 1024) << " KB\n";
+        }
+        std::cout << "  Region:       " << static_cast<int>(h.destination_code) << "\n";
+        std::cout << "  Version:      " << static_cast<int>(h.rom_version) << "\n";
+        std::cout << "  Header @:     0x" << std::hex << h.header_offset << "\n";
+        std::cout << "  Reset Vector: 0x" << std::setw(4) << std::setfill('0') << h.snes_reset_vector
+                  << std::dec << std::setfill(' ') << "\n";
+        std::cout << "  Checksum:     " << (h.header_checksum_valid && h.global_checksum_valid ? "OK" : "FAIL") << "\n";
+        return;
+    }
+
     std::cout << "  MBC Type:     " << mbc_type_name(h.mbc_type) << "\n";
     std::cout << "  ROM Size:     " << (h.rom_size_bytes / 1024) << " KB (" 
               << h.rom_banks << " banks)\n";
