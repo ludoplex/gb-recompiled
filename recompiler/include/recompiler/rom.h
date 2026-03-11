@@ -18,6 +18,13 @@
 
 namespace gbrecomp {
 
+enum class SystemType : uint8_t {
+    GAME_BOY,
+    SNES,
+};
+
+const char* system_type_name(SystemType type);
+
 /* ============================================================================
  * MBC Types
  * ========================================================================== */
@@ -85,6 +92,9 @@ bool mbc_has_rtc(MBCType type);
  * GameBoy cartridge header is located at 0x0100-0x014F
  */
 struct ROMHeader {
+    SystemType system_type = SystemType::GAME_BOY;
+    size_t header_offset = 0;
+
     // 0x0100-0x0103: Entry point (usually NOP; JP 0x0150)
     uint8_t entry_point[4];
     
@@ -143,6 +153,12 @@ struct ROMHeader {
     bool header_checksum_valid;
     bool global_checksum_valid;
     bool logo_valid;
+
+    // SNES-specific fields
+    uint8_t snes_map_mode = 0;
+    uint8_t snes_cartridge_type = 0;
+    uint16_t snes_checksum_complement = 0;
+    uint16_t snes_reset_vector = 0;
 };
 
 /* ============================================================================
@@ -200,6 +216,10 @@ private:
     
     bool parse_header();
     bool validate();
+    bool parse_game_boy_header();
+    bool parse_snes_header(size_t header_offset);
+    bool validate_game_boy();
+    bool validate_snes();
     
     std::vector<uint8_t> data_;
     ROMHeader header_;

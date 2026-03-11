@@ -35,9 +35,10 @@ void print_banner() {
 
 void print_usage(const char* program) {
     std::cout << "Usage: " << program << " <rom.gb> [options]\n\n";
-    std::cout << "Only original Game Boy / Game Boy Color ROMs are supported.\n";
-    std::cout << "SNES .sfc/.smc/.fig/.swc ROMs are not supported yet.\n\n";
+    std::cout << "Game Boy ROMs support full analysis, disassembly, and C generation.\n";
+    std::cout << "SNES ROMs currently support header inspection only.\n\n";
     std::cout << "Options:\n";
+    std::cout << "  -i, --info            Load the ROM, print header information, and exit\n";
     std::cout << "  -o, --output <dir>    Output directory (default: <rom>_output)\n";
     std::cout << "  -d, --disasm          Disassemble only (don't generate code)\n";
     std::cout << "  -a, --analyze         Analyze control flow only\n";
@@ -78,6 +79,7 @@ int main(int argc, char* argv[]) {
     std::string output_dir;
     bool disasm_only = false;
     bool analyze_only = false;
+    bool info_only = false;
     bool verbose = false;
     bool trace_log = false;
     size_t limit_instructions = 0;
@@ -102,6 +104,8 @@ int main(int argc, char* argv[]) {
             disasm_only = true;
         } else if (arg == "-a" || arg == "--analyze") {
             analyze_only = true;
+        } else if (arg == "-i" || arg == "--info") {
+            info_only = true;
         } else if (arg == "-v" || arg == "--verbose") {
             verbose = true;
         } else if (arg == "--trace") {
@@ -175,6 +179,15 @@ int main(int argc, char* argv[]) {
     
     // Print ROM info
     gbrecomp::print_rom_info(rom);
+
+    if (info_only) {
+        return 0;
+    }
+
+    if (rom.header().system_type == gbrecomp::SystemType::SNES) {
+        std::cerr << "\nError: SNES ROM header inspection works, but 65C816 disassembly/recompilation is not implemented yet.\n";
+        return 1;
+    }
     
     // Set default output directory
     if (output_dir.empty()) {
