@@ -8,8 +8,83 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <array>
+#include <cctype>
 
 namespace gbrecomp {
+
+namespace {
+
+bool has_snes_extension(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    return extension == ".sfc" || extension == ".smc" || extension == ".fig" || extension == ".swc";
+}
+
+bool looks_like_ascii_title(const std::vector<uint8_t>& data, size_t offset, size_t length) {
+    if (offset + length > data.size()) {
+        return false;
+    }
+
+    bool has_printable = false;
+    for (size_t i = 0; i < length; i++) {
+        uint8_t ch = data[offset + i];
+        if (ch == 0x00 || ch == ' ') {
+            continue;
+        }
+        if (ch < 0x20 || ch > 0x7E) {
+            return false;
+        }
+        has_printable = true;
+    }
+
+    return has_printable;
+}
+
+bool has_probable_snes_header_at(const std::vector<uint8_t>& data, size_t base) {
+    constexpr size_t kHeaderSize = 0x20;
+    if (base + kHeaderSize > data.size()) {
+        return false;
+    }
+
+    if (!looks_like_ascii_title(data, base, 21)) {
+        return false;
+    }
+
+    const uint8_t map_mode = data[base + 0x15];
+    if ((map_mode & 0x0F) > 0x05) {
+        return false;
+    }
+
+    const uint16_t checksum_complement =
+        static_cast<uint16_t>(data[base + 0x1C]) |
+        (static_cast<uint16_t>(data[base + 0x1D]) << 8);
+    const uint16_t checksum =
+        static_cast<uint16_t>(data[base + 0x1E]) |
+        (static_cast<uint16_t>(data[base + 0x1F]) << 8);
+
+    return checksum != 0 && static_cast<uint16_t>(checksum + checksum_complement) == 0xFFFF;
+}
+
+bool looks_like_snes_rom(const std::vector<uint8_t>& data, const std::filesystem::path& path) {
+    constexpr std::array<size_t, 3> header_offsets = {0x7FC0, 0xFFC0, 0x40FFC0};
+
+    for (size_t offset : header_offsets) {
+        if (has_probable_snes_header_at(data, offset)) {
+            return true;
+        }
+    }
+
+    return has_snes_extension(path);
+}
+
+bool looks_like_snes_rom(const std::vector<uint8_t>& data) {
+    return looks_like_snes_rom(data, {});
+}
+
+} // namespace
 
 /* ============================================================================
  * MBC Type Helpers
@@ -183,6 +258,11 @@ std::optional<ROM> ROM::load(const std::filesystem::path& path) {
         rom.error_ = "Failed to read file";
         return rom;
     }
+
+    if (looks_like_snes_rom(rom.data_, path)) {
+        rom.error_ = "SNES ROMs are not supported yet (expected a Game Boy .gb/.gbc ROM)";
+        return rom;
+    }
     
     // Parse header
     if (!rom.parse_header()) {
@@ -206,6 +286,11 @@ std::optional<ROM> ROM::load_from_buffer(std::vector<uint8_t> data,
     
     if (rom.data_.size() < 0x150) {
         rom.error_ = "Data too small to be a valid ROM";
+        return rom;
+    }
+
+    if (looks_like_snes_rom(rom.data_)) {
+        rom.error_ = "SNES ROMs are not supported yet (expected Game Boy ROM data)";
         return rom;
     }
     

@@ -35,6 +35,8 @@ void print_banner() {
 
 void print_usage(const char* program) {
     std::cout << "Usage: " << program << " <rom.gb> [options]\n\n";
+    std::cout << "Only original Game Boy / Game Boy Color ROMs are supported.\n";
+    std::cout << "SNES .sfc/.smc ROMs are not supported yet.\n\n";
     std::cout << "Options:\n";
     std::cout << "  -o, --output <dir>    Output directory (default: <rom>_output)\n";
     std::cout << "  -d, --disasm          Disassemble only (don't generate code)\n";

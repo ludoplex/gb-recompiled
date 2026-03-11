@@ -78,6 +78,8 @@ ninja -C output/game/build
 ./output/game/build/game
 ```
 
+> **Supported input**: Game Boy / Game Boy Color ROMs (`.gb`, `.gbc`) only. SNES ROMs (`.sfc`, `.smc`) are not supported yet and are rejected with a clear error.
+
 ---
 
 ## Quick Setup
